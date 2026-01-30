@@ -15,6 +15,17 @@ MAX_PAGE_SIZE = 100
 MAX_RETRIES = 3
 RETRY_BACKOFF = 2  # seconds, doubles each retry
 
+# Candidate API path prefixes — the client will probe these on first request
+# and cache whichever one returns a successful response.
+CANDIDATE_PATHS = [
+    "/api/v1/DepositedPapers",
+    "/api/v1/depositedpapers",
+    "/api/DepositedPapers",
+    "/api/depositedpapers",
+    "/api/deposited-papers",
+    "/api/v1/deposited-papers",
+]
+
 
 class DepositedPapersClient:
     """Client for querying the UK Parliament Deposited Papers API."""
@@ -26,6 +37,7 @@ class DepositedPapersClient:
         self.session.headers.update({
             "Accept": "application/json",
         })
+        self._api_path = None  # resolved on first request
 
     def _get(self, path, params=None):
         """Make a GET request with retry logic."""
@@ -46,6 +58,33 @@ class DepositedPapersClient:
                 else:
                     raise
 
+    def _resolve_api_path(self):
+        """Probe candidate endpoint paths and cache the first one that works."""
+        if self._api_path is not None:
+            return self._api_path
+
+        test_params = {"Skip": 0, "Take": 1}
+        for candidate in CANDIDATE_PATHS:
+            url = f"{self.base_url}{candidate}"
+            logger.debug("Probing endpoint: %s", url)
+            try:
+                resp = self.session.get(url, params=test_params, timeout=15)
+                if resp.status_code < 400:
+                    self._api_path = candidate
+                    logger.info("Discovered working API path: %s", candidate)
+                    return self._api_path
+                logger.debug("  -> %s returned %d", candidate, resp.status_code)
+            except requests.exceptions.RequestException as exc:
+                logger.debug("  -> %s error: %s", candidate, exc)
+
+        raise RuntimeError(
+            "Could not find a working API endpoint. Tried:\n"
+            + "\n".join(f"  {self.base_url}{p}" for p in CANDIDATE_PATHS)
+            + "\nPlease check the Swagger docs at "
+            "https://depositedpapers-api.parliament.uk/index.html "
+            "and update CANDIDATE_PATHS in client.py with the correct path."
+        )
+
     def search(self, search_term=None, date_from=None, date_to=None,
                member_id=None, skip=0, take=None):
         """Search deposited papers.
@@ -61,6 +100,7 @@ class DepositedPapersClient:
         Returns:
             dict with search results and pagination info.
         """
+        api_path = self._resolve_api_path()
         params = {
             "Skip": skip,
             "Take": take or self.page_size,
@@ -74,7 +114,7 @@ class DepositedPapersClient:
         if member_id:
             params["MemberId"] = member_id
 
-        return self._get("/api/deposited-papers", params=params)
+        return self._get(api_path, params=params)
 
     def get_paper(self, paper_id):
         """Get a single deposited paper by ID.
@@ -85,7 +125,8 @@ class DepositedPapersClient:
         Returns:
             dict with paper details.
         """
-        return self._get(f"/api/deposited-papers/{paper_id}")
+        api_path = self._resolve_api_path()
+        return self._get(f"{api_path}/{paper_id}")
 
     def iter_all(self, search_term=None, date_from=None, date_to=None,
                  member_id=None):
