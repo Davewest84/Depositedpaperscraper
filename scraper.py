@@ -23,39 +23,15 @@ from client import DepositedPapersClient
 logger = logging.getLogger(__name__)
 
 
-# Fields from DepositedPaperSummary / DepositedPaperDetail schemas
-SCALAR_FIELDS = [
-    "paperNumber",
-    "title",
-    "dateUpdated",
-    "indexerNotes",
-    "notes",
-]
-
 
 def flatten_paper(paper):
     """Flatten a paper record into a dict suitable for CSV output."""
     flat = {}
 
-    for key in SCALAR_FIELDS:
-        if key in paper:
-            flat[key] = paper[key]
+    # Primary columns first
+    flat["title"] = paper.get("title", "")
+    flat["dateUpdated"] = paper.get("dateUpdated", "")
 
-    # houses is a list of strings like ["Commons", "Lords"]
-    houses = paper.get("houses") or []
-    flat["houses"] = "; ".join(str(h) for h in houses)
-
-    # corporateAuthors is a list of strings
-    authors = paper.get("corporateAuthors") or []
-    flat["corporateAuthors"] = "; ".join(str(a) for a in authors)
-
-    # depositingDepartments is a list of strings
-    depts = paper.get("depositingDepartments") or []
-    flat["depositingDepartments"] = "; ".join(str(d) for d in depts)
-
-    # attachedDocuments is only available from the detail endpoint,
-    # not the search/list endpoint, so omit it. Instead add a direct
-    # link to the paper on the parliament website.
     paper_id = paper.get("paperId")
     if paper_id is not None:
         flat["url"] = (
@@ -64,6 +40,20 @@ def flatten_paper(paper):
         )
     else:
         flat["url"] = ""
+
+    # Remaining columns
+    flat["paperNumber"] = paper.get("paperNumber", "")
+    flat["indexerNotes"] = paper.get("indexerNotes", "")
+    flat["notes"] = paper.get("notes", "")
+
+    houses = paper.get("houses") or []
+    flat["houses"] = "; ".join(str(h) for h in houses)
+
+    authors = paper.get("corporateAuthors") or []
+    flat["corporateAuthors"] = "; ".join(str(a) for a in authors)
+
+    depts = paper.get("depositingDepartments") or []
+    flat["depositingDepartments"] = "; ".join(str(d) for d in depts)
 
     return flat
 
