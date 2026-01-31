@@ -1,0 +1,40 @@
+name: Scrape deposited papers
+
+on:
+  schedule:
+    # Mon, Wed, Fri at 07:00 UTC
+    - cron: "0 7 * * 1,3,5"
+  workflow_dispatch:
+
+jobs:
+  scrape:
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Run scraper
+        run: |
+          FROM_DATE=$(date -u -d '5 days ago' '+%Y-%m-%d')
+          echo "Searching for papers deposited since $FROM_DATE"
+          python scraper.py \
+            --search "health" \
+            --deposited-from "$FROM_DATE" \
+            --order-by CommitmentDateDesc \
+            --page-size 100 \
+            --output-dir output \
+            --verbose
+
+      - name: Upload results
+        uses: actions/upload-artifact@v4
+        with:
+          name: deposited-papers-${{ github.run_id }}
+          path: output/
+          retention-days: 90
