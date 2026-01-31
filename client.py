@@ -33,7 +33,7 @@ class DepositedPapersClient:
         url = f"{self.base_url}{path}"
         for attempt in range(MAX_RETRIES):
             try:
-                resp = self.session.get(url, params=params, timeout=30)
+                resp = self.session.get(url, params=params, timeout=90)
                 resp.raise_for_status()
                 return resp.json()
             except requests.exceptions.RequestException as exc:
@@ -129,6 +129,7 @@ class DepositedPapersClient:
             )
 
             items = data.get("items") or []
+            total = data.get("totalResults")
             if not items:
                 break
 
@@ -138,9 +139,10 @@ class DepositedPapersClient:
 
             skip += len(items)
 
-            total = data.get("totalResults")
-            if total is not None and skip >= total:
-                break
+            if total is not None:
+                logger.info("  Progress: %d / %d", skip, total)
+                if skip >= total:
+                    break
 
             if len(items) < self.page_size:
                 break
