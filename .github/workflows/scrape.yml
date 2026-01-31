@@ -30,7 +30,98 @@ jobs:
             --order-by CommitmentDateDesc \
             --page-size 100 \
             --output-dir output \
+            --format csv \
             --verbose
+
+      - name: Send email with results
+        if: always()
+        env:
+          EMAIL_ADDRESS: ${{ secrets.EMAIL_ADDRESS }}
+          EMAIL_APP_PASSWORD: ${{ secrets.EMAIL_APP_PASSWORD }}
+        run: |
+          if [ ! -f output/papers.csv ]; then
+            echo "No results file found — skipping email."
+            exit 0
+          fi
+
+          export ROW_COUNT=$(tail -n +2 output/papers.csv | wc -l)
+          export FROM_DATE=$(date -u -d '5 days ago' '+%Y-%m-%d')
+          export TODAY=$(date -u '+%Y-%m-%d')
+
+          python - <<'PYEOF'
+          import csv
+          import smtplib
+          import os
+          from email.mime.text import MIMEText
+          from email.mime.multipart import MIMEMultipart
+
+          email_addr = os.environ["EMAIL_ADDRESS"]
+          app_password = os.environ["EMAIL_APP_PASSWORD"]
+          row_count = os.environ["ROW_COUNT"]
+          from_date = os.environ["FROM_DATE"]
+          today = os.environ["TODAY"]
+
+          # Read CSV and convert to a readable text table
+          with open("output/papers.csv", newline="", encoding="utf-8") as f:
+              reader = csv.DictReader(f)
+              rows = list(reader)
+
+          if not rows:
+              body_text = "No deposited papers matching 'health' were found in the last 5 days."
+              body_html = f"<p>{body_text}</p>"
+          else:
+              # Plain text version
+              lines = []
+              for i, row in enumerate(rows, 1):
+                  lines.append(f"--- {i}. {row.get('title', 'Untitled')} ---")
+                  lines.append(f"  Date updated: {row.get('dateUpdated', 'N/A')}")
+                  lines.append(f"  URL: {row.get('url', 'N/A')}")
+                  lines.append(f"  Paper number: {row.get('paperNumber', 'N/A')}")
+                  lines.append(f"  Department: {row.get('depositingDepartments', 'N/A')}")
+                  lines.append(f"  Houses: {row.get('houses', 'N/A')}")
+                  if row.get("indexerNotes"):
+                      lines.append(f"  Notes: {row['indexerNotes']}")
+                  lines.append("")
+              body_text = "\n".join(lines)
+
+              # HTML version
+              html_rows = ""
+              for row in rows:
+                  title = row.get("title", "Untitled")
+                  url = row.get("url", "")
+                  link = f'<a href="{url}">{title}</a>' if url else title
+                  html_rows += f"""<tr>
+                      <td style="padding:6px;border:1px solid #ddd">{link}</td>
+                      <td style="padding:6px;border:1px solid #ddd">{row.get("dateUpdated", "")}</td>
+                      <td style="padding:6px;border:1px solid #ddd">{row.get("paperNumber", "")}</td>
+                      <td style="padding:6px;border:1px solid #ddd">{row.get("depositingDepartments", "")}</td>
+                      <td style="padding:6px;border:1px solid #ddd">{row.get("houses", "")}</td>
+                  </tr>"""
+              body_html = f"""<p>Found {row_count} deposited papers matching "health" from {from_date} to {today}.</p>
+              <table style="border-collapse:collapse;font-family:sans-serif;font-size:14px">
+              <tr style="background:#f2f2f2">
+                  <th style="padding:6px;border:1px solid #ddd;text-align:left">Title</th>
+                  <th style="padding:6px;border:1px solid #ddd;text-align:left">Date Updated</th>
+                  <th style="padding:6px;border:1px solid #ddd;text-align:left">Paper No.</th>
+                  <th style="padding:6px;border:1px solid #ddd;text-align:left">Department</th>
+                  <th style="padding:6px;border:1px solid #ddd;text-align:left">Houses</th>
+              </tr>
+              {html_rows}
+              </table>"""
+
+          msg = MIMEMultipart("alternative")
+          msg["Subject"] = f"Deposited Papers: {row_count} results for 'health' ({from_date} to {today})"
+          msg["From"] = email_addr
+          msg["To"] = email_addr
+          msg.attach(MIMEText(body_text, "plain"))
+          msg.attach(MIMEText(body_html, "html"))
+
+          with smtplib.SMTP_SSL("smtp.gmail.com", 465) as server:
+              server.login(email_addr, app_password)
+              server.sendmail(email_addr, email_addr, msg.as_string())
+
+          print(f"Email sent to {email_addr}")
+          PYEOF
 
       - name: Upload results
         uses: actions/upload-artifact@v4
