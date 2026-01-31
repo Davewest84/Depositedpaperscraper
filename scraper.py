@@ -25,15 +25,9 @@ logger = logging.getLogger(__name__)
 
 # Fields from DepositedPaperSummary / DepositedPaperDetail schemas
 SCALAR_FIELDS = [
-    "paperId",
     "paperNumber",
     "title",
-    "dateReceived",
-    "dateOfOrigin",
-    "dateOfCommitmentToDeposit",
-    "dateCreated",
     "dateUpdated",
-    "datePublished",
     "indexerNotes",
     "notes",
 ]
@@ -62,7 +56,6 @@ def flatten_paper(paper):
     # attachedDocuments (detail only) is a list of URL strings
     docs = paper.get("attachedDocuments") or []
     flat["attachedDocuments"] = "; ".join(str(d) for d in docs)
-    flat["attachedDocumentCount"] = len(docs)
 
     return flat
 
