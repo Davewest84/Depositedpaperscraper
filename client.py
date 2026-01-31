@@ -1,6 +1,7 @@
 """Client for the UK Parliament Deposited Papers API.
 
 API docs: https://depositedpapers-api.parliament.uk/index.html
+Swagger:  https://depositedpapers-api.parliament.uk/swagger/v1/swagger.json
 """
 
 import time
@@ -10,21 +11,10 @@ import requests
 logger = logging.getLogger(__name__)
 
 BASE_URL = "https://depositedpapers-api.parliament.uk"
+API_PATH = "/api/DepositedPapers"
 DEFAULT_PAGE_SIZE = 20
-MAX_PAGE_SIZE = 100
 MAX_RETRIES = 3
 RETRY_BACKOFF = 2  # seconds, doubles each retry
-
-# Candidate API path prefixes — the client will probe these on first request
-# and cache whichever one returns a successful response.
-CANDIDATE_PATHS = [
-    "/api/v1/DepositedPapers",
-    "/api/v1/depositedpapers",
-    "/api/DepositedPapers",
-    "/api/depositedpapers",
-    "/api/deposited-papers",
-    "/api/v1/deposited-papers",
-]
 
 
 class DepositedPapersClient:
@@ -32,12 +22,11 @@ class DepositedPapersClient:
 
     def __init__(self, base_url=BASE_URL, page_size=DEFAULT_PAGE_SIZE):
         self.base_url = base_url.rstrip("/")
-        self.page_size = min(page_size, MAX_PAGE_SIZE)
+        self.page_size = page_size
         self.session = requests.Session()
         self.session.headers.update({
             "Accept": "application/json",
         })
-        self._api_path = None  # resolved on first request
 
     def _get(self, path, params=None):
         """Make a GET request with retry logic."""
@@ -58,142 +47,102 @@ class DepositedPapersClient:
                 else:
                     raise
 
-    def _resolve_api_path(self):
-        """Probe candidate endpoint paths and cache the first one that works."""
-        if self._api_path is not None:
-            return self._api_path
-
-        test_params = {"Skip": 0, "Take": 1}
-        for candidate in CANDIDATE_PATHS:
-            url = f"{self.base_url}{candidate}"
-            logger.debug("Probing endpoint: %s", url)
-            try:
-                resp = self.session.get(url, params=test_params, timeout=15)
-                if resp.status_code < 400:
-                    self._api_path = candidate
-                    logger.info("Discovered working API path: %s", candidate)
-                    return self._api_path
-                logger.debug("  -> %s returned %d", candidate, resp.status_code)
-            except requests.exceptions.RequestException as exc:
-                logger.debug("  -> %s error: %s", candidate, exc)
-
-        raise RuntimeError(
-            "Could not find a working API endpoint. Tried:\n"
-            + "\n".join(f"  {self.base_url}{p}" for p in CANDIDATE_PATHS)
-            + "\nPlease check the Swagger docs at "
-            "https://depositedpapers-api.parliament.uk/index.html "
-            "and update CANDIDATE_PATHS in client.py with the correct path."
-        )
-
-    def search(self, search_term=None, date_from=None, date_to=None,
-               member_id=None, skip=0, take=None):
+    def search(self, terms=None, deposited_from=None, deposited_to=None,
+               house=None, order_by=None, department_ses_id=None,
+               skip=0, take=None):
         """Search deposited papers.
 
         Args:
-            search_term: Free-text search string.
-            date_from: Start date (YYYY-MM-DD).
-            date_to: End date (YYYY-MM-DD).
-            member_id: Filter by depositing member ID.
+            terms: Free-text search across department, paper number, summary.
+                   Must be 2–500 characters.
+            deposited_from: Papers deposited on or after this date (YYYY-MM-DD).
+            deposited_to: Papers deposited on or before this date (YYYY-MM-DD).
+            house: Filter by house — "All", "Commons", or "Lords".
+            order_by: Sort order — "Relevance", "CommitmentDateAsc",
+                      or "CommitmentDateDesc".
+            department_ses_id: Filter by depositing department ID.
             skip: Number of results to skip (pagination offset).
             take: Number of results to return per page.
 
         Returns:
-            dict with search results and pagination info.
+            dict with keys: items, totalResults, links.
         """
-        api_path = self._resolve_api_path()
         params = {
             "Skip": skip,
             "Take": take or self.page_size,
         }
-        if search_term:
-            params["SearchTerm"] = search_term
-        if date_from:
-            params["DateFrom"] = date_from
-        if date_to:
-            params["DateTo"] = date_to
-        if member_id:
-            params["MemberId"] = member_id
+        if terms:
+            params["Terms"] = terms
+        if deposited_from:
+            params["DepositedFrom"] = deposited_from
+        if deposited_to:
+            params["DepositedTo"] = deposited_to
+        if house:
+            params["House"] = house
+        if order_by:
+            params["OrderBy"] = order_by
+        if department_ses_id is not None:
+            params["DepartmentSesId"] = department_ses_id
 
-        return self._get(api_path, params=params)
+        return self._get(API_PATH, params=params)
 
     def get_paper(self, paper_id):
         """Get a single deposited paper by ID.
 
         Args:
-            paper_id: The deposited paper ID.
+            paper_id: The deposited paper ID (integer).
 
         Returns:
-            dict with paper details.
+            dict with keys: value (paper detail), links.
         """
-        api_path = self._resolve_api_path()
-        return self._get(f"{api_path}/{paper_id}")
+        return self._get(f"{API_PATH}/{paper_id}")
 
-    def iter_all(self, search_term=None, date_from=None, date_to=None,
-                 member_id=None):
+    def iter_all(self, terms=None, deposited_from=None, deposited_to=None,
+                 house=None, order_by=None, department_ses_id=None):
         """Iterate over all deposited papers matching the query.
 
-        Handles pagination automatically, yielding individual paper records.
+        Handles pagination automatically. Each yielded record is the inner
+        ``value`` dict (the actual paper data), unwrapped from the
+        ``{value, links}`` resource envelope.
 
         Args:
-            search_term: Free-text search string.
-            date_from: Start date (YYYY-MM-DD).
-            date_to: End date (YYYY-MM-DD).
-            member_id: Filter by depositing member ID.
+            terms: Free-text search.
+            deposited_from: Start date (YYYY-MM-DD).
+            deposited_to: End date (YYYY-MM-DD).
+            house: "All", "Commons", or "Lords".
+            order_by: "Relevance", "CommitmentDateAsc", "CommitmentDateDesc".
+            department_ses_id: Depositing department ID.
 
         Yields:
-            dict for each deposited paper.
+            dict for each deposited paper (unwrapped from resource envelope).
         """
         skip = 0
         while True:
             data = self.search(
-                search_term=search_term,
-                date_from=date_from,
-                date_to=date_to,
-                member_id=member_id,
+                terms=terms,
+                deposited_from=deposited_from,
+                deposited_to=deposited_to,
+                house=house,
+                order_by=order_by,
+                department_ses_id=department_ses_id,
                 skip=skip,
             )
 
-            # The API may return results under different keys.
-            # Try common patterns used by Parliament APIs.
-            results = []
-            if isinstance(data, list):
-                results = data
-            elif isinstance(data, dict):
-                # Try known response shapes
-                for key in ("results", "items", "depositedPapers", "value"):
-                    if key in data:
-                        results = data[key]
-                        break
-                else:
-                    # If the dict itself looks like a paged response with
-                    # a totalResults count, the items may be at the top level
-                    # under a different key. Log and break.
-                    logger.warning(
-                        "Unexpected response shape at skip=%d: keys=%s",
-                        skip, list(data.keys()),
-                    )
-                    break
-
-            if not results:
+            items = data.get("items") or []
+            if not items:
                 break
 
-            yield from results
+            for item in items:
+                # Each item is {value: {...}, links: [...]}
+                yield item.get("value", item)
 
-            skip += len(results)
+            skip += len(items)
 
-            # Check if we've reached the end
-            total = None
-            if isinstance(data, dict):
-                for key in ("totalResults", "total", "totalCount"):
-                    if key in data:
-                        total = data[key]
-                        break
-
+            total = data.get("totalResults")
             if total is not None and skip >= total:
                 break
 
-            # Safety: if we got fewer results than requested, we're done
-            if len(results) < self.page_size:
+            if len(items) < self.page_size:
                 break
 
     def download_file(self, file_url, dest_path):

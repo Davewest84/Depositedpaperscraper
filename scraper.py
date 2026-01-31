@@ -1,13 +1,13 @@
 #!/usr/bin/env python3
 """Scrape deposited papers from the UK Parliament API.
 
-Fetches metadata for deposited papers and optionally downloads attached files.
-Results are saved as JSON (one file per run) and/or CSV.
+Fetches metadata for deposited papers and optionally downloads attached
+documents. Results are saved as JSON and/or CSV.
 
 Usage:
     python scraper.py --help
-    python scraper.py --output data/papers.json
-    python scraper.py --search "immigration" --date-from 2024-01-01 --format csv
+    python scraper.py --search "immigration"
+    python scraper.py --search "health" --deposited-from 2024-01-01 --format csv
     python scraper.py --download-files --output-dir data/
 """
 
@@ -17,55 +17,52 @@ import json
 import logging
 import os
 import re
-import sys
 
 from client import DepositedPapersClient
 
 logger = logging.getLogger(__name__)
 
 
-def flatten_paper(paper):
-    """Flatten a paper record into a dict suitable for CSV output.
+# Fields from DepositedPaperSummary / DepositedPaperDetail schemas
+SCALAR_FIELDS = [
+    "paperId",
+    "paperNumber",
+    "title",
+    "dateReceived",
+    "dateOfOrigin",
+    "dateOfCommitmentToDeposit",
+    "dateCreated",
+    "dateUpdated",
+    "datePublished",
+    "indexerNotes",
+    "notes",
+]
 
-    The API response may nest file and member information. This function
-    pulls the most useful fields to the top level.
-    """
+
+def flatten_paper(paper):
+    """Flatten a paper record into a dict suitable for CSV output."""
     flat = {}
 
-    # Top-level scalar fields
-    for key in ("id", "title", "dateDeposited", "dateCreated",
-                "referenceNumber", "description", "house"):
+    for key in SCALAR_FIELDS:
         if key in paper:
             flat[key] = paper[key]
 
-    # Depositing member (may be nested)
-    member = paper.get("depositingMember") or paper.get("member") or {}
-    if isinstance(member, dict):
-        flat["memberName"] = member.get("name") or member.get("nameDisplayAs", "")
-        flat["memberId"] = member.get("id", "")
-    elif isinstance(member, str):
-        flat["memberName"] = member
+    # houses is a list of strings like ["Commons", "Lords"]
+    houses = paper.get("houses") or []
+    flat["houses"] = "; ".join(str(h) for h in houses)
 
-    # Files / attachments
-    files = paper.get("files") or paper.get("attachments") or []
-    if files:
-        urls = []
-        filenames = []
-        for f in files:
-            if isinstance(f, dict):
-                url = f.get("url") or f.get("uri") or ""
-                name = f.get("filename") or f.get("name") or ""
-                urls.append(url)
-                filenames.append(name)
-            elif isinstance(f, str):
-                urls.append(f)
-        flat["fileUrls"] = "; ".join(urls)
-        flat["fileNames"] = "; ".join(filenames)
-        flat["fileCount"] = len(files)
-    else:
-        flat["fileUrls"] = ""
-        flat["fileNames"] = ""
-        flat["fileCount"] = 0
+    # corporateAuthors is a list of strings
+    authors = paper.get("corporateAuthors") or []
+    flat["corporateAuthors"] = "; ".join(str(a) for a in authors)
+
+    # depositingDepartments is a list of strings
+    depts = paper.get("depositingDepartments") or []
+    flat["depositingDepartments"] = "; ".join(str(d) for d in depts)
+
+    # attachedDocuments (detail only) is a list of URL strings
+    docs = paper.get("attachedDocuments") or []
+    flat["attachedDocuments"] = "; ".join(str(d) for d in docs)
+    flat["attachedDocumentCount"] = len(docs)
 
     return flat
 
@@ -93,7 +90,6 @@ def save_csv(papers, path):
 
     flat_rows = [flatten_paper(p) for p in papers]
     fieldnames = list(flat_rows[0].keys())
-    # Ensure all keys are present
     for row in flat_rows:
         for k in row:
             if k not in fieldnames:
@@ -108,39 +104,32 @@ def save_csv(papers, path):
 
 
 def download_files(client, papers, output_dir):
-    """Download attached files for each paper."""
+    """Download attached documents for each paper."""
     files_dir = os.path.join(output_dir, "files")
     os.makedirs(files_dir, exist_ok=True)
 
     total_files = 0
     for paper in papers:
-        paper_id = paper.get("id", "unknown")
-        files = paper.get("files") or paper.get("attachments") or []
-        for f in files:
-            if isinstance(f, dict):
-                url = f.get("url") or f.get("uri")
-                name = f.get("filename") or f.get("name") or f"file_{total_files}"
-            elif isinstance(f, str):
-                url = f
-                name = f"file_{total_files}"
-            else:
+        paper_id = paper.get("paperId", "unknown")
+        docs = paper.get("attachedDocuments") or []
+        for doc_url in docs:
+            if not doc_url or not isinstance(doc_url, str):
                 continue
 
-            if not url:
-                continue
-
-            safe_name = sanitise_filename(name)
+            # Use the last segment of the URL as filename
+            url_filename = doc_url.rstrip("/").rsplit("/", 1)[-1]
+            safe_name = sanitise_filename(url_filename) or f"file_{total_files}"
             dest = os.path.join(files_dir, f"{paper_id}_{safe_name}")
             if os.path.exists(dest):
                 logger.debug("Skipping existing file: %s", dest)
                 continue
 
-            logger.info("Downloading %s -> %s", url, dest)
+            logger.info("Downloading %s -> %s", doc_url, dest)
             try:
-                client.download_file(url, dest)
+                client.download_file(doc_url, dest)
                 total_files += 1
             except Exception:
-                logger.exception("Failed to download %s", url)
+                logger.exception("Failed to download %s", doc_url)
 
     logger.info("Downloaded %d files to %s", total_files, files_dir)
 
@@ -151,21 +140,35 @@ def parse_args(argv=None):
     )
     parser.add_argument(
         "--search", "-s",
-        dest="search_term",
-        help="Free-text search term.",
+        dest="terms",
+        help=(
+            "Free-text search across depositing department, paper number, "
+            "and summary (2–500 chars)."
+        ),
     )
     parser.add_argument(
-        "--date-from",
-        help="Only include papers deposited on or after this date (YYYY-MM-DD).",
+        "--deposited-from",
+        help="Papers deposited on or after this date (YYYY-MM-DD).",
     )
     parser.add_argument(
-        "--date-to",
-        help="Only include papers deposited on or before this date (YYYY-MM-DD).",
+        "--deposited-to",
+        help="Papers deposited on or before this date (YYYY-MM-DD).",
     )
     parser.add_argument(
-        "--member-id",
+        "--house",
+        choices=["All", "Commons", "Lords"],
+        help="Filter by house.",
+    )
+    parser.add_argument(
+        "--order-by",
+        choices=["Relevance", "CommitmentDateAsc", "CommitmentDateDesc"],
+        help="Sort order for results.",
+    )
+    parser.add_argument(
+        "--department-id",
         type=int,
-        help="Filter by depositing member ID.",
+        dest="department_ses_id",
+        help="Filter by depositing department ID.",
     )
     parser.add_argument(
         "--format", "-f",
@@ -181,13 +184,13 @@ def parse_args(argv=None):
     parser.add_argument(
         "--download-files",
         action="store_true",
-        help="Download attached files for each paper.",
+        help="Download attached documents for each paper.",
     )
     parser.add_argument(
         "--page-size",
         type=int,
         default=20,
-        help="Number of results per API request (default: 20, max: 100).",
+        help="Number of results per API request (default: 20).",
     )
     parser.add_argument(
         "--verbose", "-v",
@@ -208,20 +211,22 @@ def main(argv=None):
     client = DepositedPapersClient(page_size=args.page_size)
 
     logger.info("Fetching deposited papers...")
-    if args.search_term:
-        logger.info("  Search term: %s", args.search_term)
-    if args.date_from:
-        logger.info("  Date from: %s", args.date_from)
-    if args.date_to:
-        logger.info("  Date to: %s", args.date_to)
-    if args.member_id:
-        logger.info("  Member ID: %s", args.member_id)
+    if args.terms:
+        logger.info("  Terms: %s", args.terms)
+    if args.deposited_from:
+        logger.info("  Deposited from: %s", args.deposited_from)
+    if args.deposited_to:
+        logger.info("  Deposited to: %s", args.deposited_to)
+    if args.house:
+        logger.info("  House: %s", args.house)
 
     papers = list(client.iter_all(
-        search_term=args.search_term,
-        date_from=args.date_from,
-        date_to=args.date_to,
-        member_id=args.member_id,
+        terms=args.terms,
+        deposited_from=args.deposited_from,
+        deposited_to=args.deposited_to,
+        house=args.house,
+        order_by=args.order_by,
+        department_ses_id=args.department_ses_id,
     ))
 
     logger.info("Fetched %d papers.", len(papers))
