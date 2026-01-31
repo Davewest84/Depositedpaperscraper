@@ -53,9 +53,17 @@ def flatten_paper(paper):
     depts = paper.get("depositingDepartments") or []
     flat["depositingDepartments"] = "; ".join(str(d) for d in depts)
 
-    # attachedDocuments (detail only) is a list of URL strings
-    docs = paper.get("attachedDocuments") or []
-    flat["attachedDocuments"] = "; ".join(str(d) for d in docs)
+    # attachedDocuments is only available from the detail endpoint,
+    # not the search/list endpoint, so omit it. Instead add a direct
+    # link to the paper on the parliament website.
+    paper_id = paper.get("paperId")
+    if paper_id is not None:
+        flat["url"] = (
+            f"https://depositedpapers.parliament.uk/depositedpaper/"
+            f"{paper_id}/details"
+        )
+    else:
+        flat["url"] = ""
 
     return flat
 
