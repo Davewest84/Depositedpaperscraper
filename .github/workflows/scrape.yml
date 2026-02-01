@@ -112,13 +112,13 @@ jobs:
           msg = MIMEMultipart("alternative")
           msg["Subject"] = f"Deposited Papers: {row_count} results for 'health' ({from_date} to {today})"
           msg["From"] = email_addr
-          msg["To"] = email_addr
+          msg["To"] = "dave.west@hsj.co.uk"
           msg.attach(MIMEText(body_text, "plain"))
           msg.attach(MIMEText(body_html, "html"))
 
           with smtplib.SMTP_SSL("smtp.gmail.com", 465) as server:
               server.login(email_addr, app_password)
-              server.sendmail(email_addr, email_addr, msg.as_string())
+              server.sendmail(email_addr, "dave.west@hsj.co.uk", msg.as_string())
 
           print(f"Email sent to {email_addr}")
           PYEOF
